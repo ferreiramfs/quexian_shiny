@@ -46,7 +46,8 @@ tam_fonte_eixos <- 10
 #UI
 ui <- fluidPage(
   theme = bs_theme(bootswatch = "flatly"),
-  titlePanel(h2("Análise de Anomalias Congênitas", align = "center")),
+  title = "Análise ACs",
+  h2("Análise de Anomalias Congênitas", style = "text-align: center;"),
   
   fluidRow(
     column(4, selectInput("tipo_analise", "Tipo de análise:",
@@ -252,7 +253,8 @@ mod_bivariate_server <- function(input, output, session,
           plot.title  = element_text(hjust = 0.5, face = "bold"),
           axis.text.x = element_text(size = tam_fonte_eixos, face = "bold",
                                      angle = 45, hjust = 1),
-          axis.text.y = element_text(size = tam_fonte_eixos, face = "bold")
+          axis.text.y = element_text(size = tam_fonte_eixos, face = "bold"),
+          plot.caption = element_text(hjust = 0)
         )
     }
   })
