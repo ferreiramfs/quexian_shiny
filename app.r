@@ -7,7 +7,7 @@ library(fst)
 library(dplyr)
 library(ggplot2)
 library(scales)
-library(gstat)
+library(spdep)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shapes
@@ -89,22 +89,37 @@ ui <- fluidPage(
         width = 12,
         uiOutput("titulo_mapa"),
         fluidRow(
-          column(4, selectInput("nivel_geo", "Nível geográfico:",
-                                choices = c("Municipal", "Regional", "Mesoregional", "Macroregional"),
-                                selected = "Municipal")),
-          column(4, radioButtons("modo_periodo", "Período:",
-                                 choices = c("Anual", "Completo (2013–2022)"),
-                                 selected = "Anual", inline = TRUE)),
+          column(4, radioButtons("modo_temporal", "Visualização:",
+                                 choices = c("Série Temporal", "Mapa"),
+                                 selected = "Série Temporal", inline = TRUE)),
           column(4, conditionalPanel(
-            condition = "input.modo_periodo == 'Anual'",
+            condition = "input.modo_temporal == 'Mapa'",
+            selectInput("nivel_geo", "Nível geográfico:",
+                        choices = c("Municipal", "Regional", "Mesoregional", "Macroregional"),
+                        selected = "Municipal"))),
+          column(4, conditionalPanel(
+            condition = "input.modo_temporal == 'Mapa'",
+            radioButtons("modo_periodo", "Período:",
+                         choices = c("Anual", "Completo (2013–2022)"),
+                         selected = "Anual", inline = TRUE))),
+          column(4, conditionalPanel(
+            condition = "input.modo_temporal == 'Mapa' && input.modo_periodo == 'Anual'",
             sliderInput("ano_mapa", "Selecione o ano:",
                         min = 2013, max = 2022, value = 2013,
-                        step = 1, sep = "", animate = TRUE)
-          ))
+                        step = 1, sep = "", animate = TRUE)))
         ),
-        fluidRow(
-          column(7, leafletOutput("mapa_anomalia",    height = "500px")),
-          column(5, plotOutput("variograma_anomalia", height = "500px"))
+        conditionalPanel(
+          condition = "input.modo_temporal == 'Mapa'",
+          fluidRow(
+            column(7, leafletOutput("mapa_anomalia", height = "500px")),
+            column(5, plotOutput("moran_plot",       height = "500px"))
+          )
+        ),
+        conditionalPanel(
+          condition = "input.modo_temporal == 'Série Temporal'",
+          fluidRow(
+            column(12, plotOutput("grafico_temporal", height = "450px"))
+          )
         )
       )
     )
@@ -352,6 +367,42 @@ mod_temporal_server <- function(input, output, session,
     )
   )
   
+  output$grafico_temporal <- renderPlot({
+    req(input$anomalia)
+    
+    dados <- prevalencia_macroregional %>%
+      filter(anomalia == input$anomalia) %>%
+      group_by(ANO_NASC) %>%
+      summarise(
+        casos    = sum(casos,    na.rm = TRUE),
+        nascidos = sum(nascidos, na.rm = TRUE),
+        .groups  = "drop"
+      ) %>%
+      mutate(prevalencia = ifelse(nascidos > 0, (casos / nascidos) * 10000, NA_real_))
+    
+    ggplot(dados, aes(x = ANO_NASC, y = prevalencia)) +
+      geom_line(aes(color = "Prevalência"), linewidth = 1) +
+      geom_point(aes(color = "Prevalência"), size = 2.5) +
+      geom_smooth(aes(color = "Tendência linear"), method = "lm", se = FALSE,
+                  linewidth = 0.8, linetype = "dashed") +
+      scale_color_manual(
+        name   = NULL,
+        values = c("Prevalência" = "#2c7bb6", "Tendência linear" = "#d9534f")
+      ) +
+      scale_x_continuous(breaks = 2013:2022) +
+      labs(
+        x     = "Ano de nascimento",
+        y     = "Prevalência (por 10.000 NV)",
+        title = paste("Evolução temporal —", input$anomalia)
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(
+        plot.title  = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(size = tam_fonte_eixos),
+        axis.text.y = element_text(size = tam_fonte_eixos)
+      )
+  })
+  
   # ── Reactive compartilhado — evita duplicar o join no mapa e no variograma ──
   dados_mapa_r <- reactive({
     req(input$anomalia, input$nivel_geo, input$modo_periodo)
@@ -385,27 +436,24 @@ mod_temporal_server <- function(input, output, session,
   })
   
   output$titulo_mapa <- renderUI({
-    req(input$anomalia, input$nivel_geo, input$modo_periodo)
+    req(input$anomalia, input$modo_temporal)
     
-    nivel_texto <- switch(
-      input$nivel_geo,
-      "Municipal"     = "Município",
-      "Regional"      = "Regional de Saúde",
-      "Mesoregional"  = "Mesoregião",
-      "Macroregional" = "Macroregional de Saúde"
-    )
-    
-    periodo_texto <- if (input$modo_periodo == "Anual") {
-      req(input$ano_mapa)
-      input$ano_mapa
+    if (input$modo_temporal == "Série Temporal") {
+      h3(paste0("Evolução temporal — ", input$anomalia, " (2013–2022)"),
+         style = "text-align:center; margin-top:10px; font-weight:600;")
     } else {
-      "2013–2022"
+      req(input$nivel_geo, input$modo_periodo)
+      nivel_texto <- switch(input$nivel_geo,
+                            "Municipal"     = "Município",
+                            "Regional"      = "Regional de Saúde",
+                            "Mesoregional"  = "Mesoregião",
+                            "Macroregional" = "Macroregional de Saúde")
+      periodo_texto <- if (input$modo_periodo == "Anual") {
+        req(input$ano_mapa); input$ano_mapa
+      } else "2013–2022"
+      h3(paste0("Prevalência de ", input$anomalia, " por ", nivel_texto, " — ", periodo_texto),
+         style = "text-align:center; margin-top:10px; font-weight:600;")
     }
-    
-    h3(
-      paste0("Prevalência de ", input$anomalia, " por ", nivel_texto, " — ", periodo_texto),
-      style = "text-align:center; margin-top:10px; font-weight:600;"
-    )
   })
   
   output$mapa_anomalia <- renderLeaflet({
@@ -450,84 +498,102 @@ mod_temporal_server <- function(input, output, session,
       ) %>%
       addLegend(
         position  = "bottomright", pal = pal, values = dom_fixo,
-        title     = paste("Prevalência de", input$anomalia, "-", input$ano_mapa),
+        title     = paste("Prevalência —", if (input$modo_periodo == "Anual") input$ano_mapa else "2013-2022"),
         labFormat = labelFormat(suffix = " /10k")
       ) %>%
       setView(lng = -51.5, lat = -24.5, zoom = 7) %>%
       setMaxBounds(lng1 = -54.0, lat1 = -26.7, lng2 = -48.0, lat2 = -22.5)
   })
   
-  output$variograma_anomalia <- renderPlot({
+  output$moran_plot <- renderPlot({
     dados_mapa <- dados_mapa_r()
     nivel_info <- niveis[[input$nivel_geo]]
     
-    # Padroniza o nome da coluna de prevalência
+    # Padroniza nome da coluna de prevalência
     if (nivel_info$col_prev != "prevalencia") {
       dados_mapa <- dados_mapa %>%
         rename(prevalencia = all_of(nivel_info$col_prev))
     }
     
-    # Centroides projetados em metros (SIRGAS 2000 UTM zona 22S)
-    sf_pts <- dados_mapa %>%
+    # Filtra regiões com prevalência conhecida
+    sf_valido <- dados_mapa %>%
       select(prevalencia, geometry) %>%
-      filter(!is.na(prevalencia)) %>%
-      st_set_agr("constant") %>%
-      st_centroid() %>%
-      st_transform(31982)
+      filter(!is.na(prevalencia))
     
     validate(
-      need(nrow(sf_pts) >= 5,
-           "Poucos dados para calcular o variograma neste filtro.")
+      need(nrow(sf_valido) >= 4,
+           "Poucos dados para calcular o I de Moran neste filtro.")
     )
     
-    # Breaks logarítmicos — distribui melhor os pares no nível municipal
-    coords   <- st_coordinates(sf_pts)
-    dist_max <- max(dist(coords))
-    dist_min <- min(dist(coords)[dist(coords) > 0])
-    breaks   <- exp(seq(log(dist_min), log(dist_max * 0.6), length.out = 16))
+    vizinhos <- suppressWarnings(poly2nb(sf_valido, queen = TRUE, snap = 500))
+    pesos    <- nb2listw(vizinhos, style = "W", zero.policy = TRUE)
+    prev_z <- as.numeric(scale(sf_valido$prevalencia))
+    lag_z  <- lag.listw(pesos, prev_z, zero.policy = TRUE)
+    moran_i <- sum(prev_z * lag_z) / sum(prev_z^2)
     
-    vgm_emp <- variogram(
-      prevalencia ~ 1,
-      data       = sf_pts,
-      boundaries = breaks
+    # Quadrantes
+    df_plot <- data.frame(
+      prev_z   = prev_z,
+      lag_z    = lag_z,
+      quadrant = case_when(
+        prev_z >= 0 & lag_z >= 0 ~ "Alto-Alto",
+        prev_z <  0 & lag_z <  0 ~ "Baixo-Baixo",
+        prev_z >= 0 & lag_z <  0 ~ "Alto-Baixo",
+        TRUE                      ~ "Baixo-Alto"
+      )
     )
     
-    vgm_emp$dist_km <- vgm_emp$dist / 1000
-    sill_ref        <- var(sf_pts$prevalencia)
+    cores_quad <- c(
+      "Alto-Alto"   = "#d7191c",
+      "Baixo-Baixo" = "#2c7bb6",
+      "Alto-Baixo"  = "#fdae61",
+      "Baixo-Alto"  = "#abd9e9"
+    )
     
-    ggplot(vgm_emp, aes(x = dist_km, y = gamma)) +
-      geom_hline(yintercept = sill_ref, linetype = "dashed",
-                 color = "gray60", linewidth = 0.5) +
-      annotate("text", x = max(vgm_emp$dist_km) * 0.98, y = sill_ref,
-               label = "variância total", hjust = 1, vjust = -0.5,
-               size = 3, color = "gray50") +
-      geom_line(color = "#2c7bb6", alpha = 0.4, linewidth = 0.5) +
-      geom_point(aes(size = np), color = "#2c7bb6", alpha = 0.85) +
-      scale_x_log10(labels = comma) +
-      scale_size_continuous(
-        name   = "Nº de pares",
-        range  = c(2, 8),
-        labels = comma
-      ) +
+    lim <- max(abs(c(prev_z, lag_z))) * 1.1
+    periodo_sub <- if (input$modo_periodo == "Anual") input$ano_mapa else "2013-2022"
+    
+    ggplot(df_plot, aes(x = prev_z, y = lag_z, color = quadrant)) +
+      annotate("rect", xmin =    0, xmax =  Inf, ymin =    0, ymax =  Inf,
+               fill = "#d7191c", alpha = 0.04) +
+      annotate("rect", xmin = -Inf, xmax =    0, ymin = -Inf, ymax =    0,
+               fill = "#2c7bb6", alpha = 0.04) +
+      annotate("rect", xmin =    0, xmax =  Inf, ymin = -Inf, ymax =    0,
+               fill = "#fdae61", alpha = 0.04) +
+      annotate("rect", xmin = -Inf, xmax =    0, ymin =    0, ymax =  Inf,
+               fill = "#abd9e9", alpha = 0.04) +
+      geom_hline(yintercept = 0, color = "gray60", linewidth = 0.4) +
+      geom_vline(xintercept = 0, color = "gray60", linewidth = 0.4) +
+      geom_abline(slope = moran_i, intercept = 0,
+                  color = "gray20", linewidth = 0.8) +
+      geom_point(alpha = 0.75, size = 2) +
+      scale_color_manual(values = cores_quad, guide = "none") +
+      annotate("text", x =  lim * 0.95, y =  lim * 0.95, hjust = 1,
+               label = "Alto-Alto",   color = "#d7191c", size = 3.2, fontface = "bold") +
+      annotate("text", x = -lim * 0.95, y = -lim * 0.95, hjust = 0,
+               label = "Baixo-Baixo", color = "#2c7bb6", size = 3.2, fontface = "bold") +
+      annotate("text", x =  lim * 0.95, y = -lim * 0.95, hjust = 1,
+               label = "Alto-Baixo",  color = "#fdae61", size = 3.2, fontface = "bold") +
+      annotate("text", x = -lim * 0.95, y =  lim * 0.95, hjust = 0,
+               label = "Baixo-Alto",  color = "#abd9e9", size = 3.2, fontface = "bold") +
+      coord_cartesian(xlim = c(-lim, lim), ylim = c(-lim, lim)) +
       labs(
-        x        = "Distância (km, escala log)",
-        y        = "Semivariância",
-        title    = "Variograma Empírico",
-        subtitle = paste0(
-          input$anomalia, " · ", input$nivel_geo, " · ",
-          if (input$modo_periodo == "Anual") input$ano_mapa else "2013-2022"
-        ),
+        x        = "Prevalência padronizada (z)",
+        y        = "Lag espacial — média dos vizinhos (z)",
+        title    = "Moran Scatterplot",
+        subtitle = paste0(input$anomalia, " · ", input$nivel_geo, " · ", periodo_sub),
         caption  = paste0(
-          "Abaixo da linha tracejada -> autocorrelação espacial positiva\n",
-          "Acima -> variabilidade maior entre vizinhos do que no conjunto"
+          "I de Moran = ", round(moran_i, 3),
+          "  |  slope da linha de regressão\n",
+          "Vizinhança por contiguidade (queen), pesos row-standardized"
         )
       ) +
       theme_minimal(base_size = 13) +
       theme(
         plot.title    = element_text(hjust = 0.5, face = "bold"),
         plot.subtitle = element_text(hjust = 0.5, color = "gray40", size = 10),
-        plot.caption  = element_text(color = "gray50", size = 8, lineheight = 1.3, hjust = 0),
-        legend.position = "bottom"
+        plot.caption  = element_text(color = "gray50", size = 8,
+                                     lineheight = 1.3, hjust = 0)
       )
   })
 }
